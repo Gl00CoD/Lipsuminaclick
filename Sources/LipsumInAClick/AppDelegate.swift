@@ -10,9 +10,9 @@ enum TextMode: String {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
-    private let sentenceItem = NSMenuItem(title: "Sentence", action: #selector(selectSentence), keyEquivalent: "")
-    private let paragraphItem = NSMenuItem(title: "Paragraph", action: #selector(selectParagraph), keyEquivalent: "")
-    private var resetIconWork: DispatchWorkItem?
+    private var sentenceItem: NSMenuItem!
+    private var paragraphItem: NSMenuItem!
+    private var resetIconTask: Task<Void, Never>?
 
     private static let modeKey = "textMode"
 
@@ -45,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func buildMenu() {
         menu.delegate = self
+        sentenceItem = NSMenuItem(title: "Sentence", action: #selector(AppDelegate.selectSentence), keyEquivalent: "")
+        paragraphItem = NSMenuItem(title: "Paragraph", action: #selector(AppDelegate.selectParagraph), keyEquivalent: "")
         sentenceItem.target = self
         paragraphItem.target = self
         menu.addItem(sentenceItem)
@@ -106,13 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Briefly swaps the icon for a checkmark so you know the copy worked.
     private func flashConfirmation() {
         guard let button = statusItem.button else { return }
-        resetIconWork?.cancel()
+        resetIconTask?.cancel()
         button.image = Self.symbol("checkmark", description: "Copied")
-        let work = DispatchWorkItem { [weak self] in
+        resetIconTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
             self?.statusItem.button?.image = Self.symbol("text.alignleft", description: "Lipsum in a Click")
         }
-        resetIconWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
     private static func symbol(_ name: String, description: String) -> NSImage? {
