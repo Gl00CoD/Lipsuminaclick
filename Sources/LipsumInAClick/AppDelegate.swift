@@ -12,9 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private var sentenceItem: NSMenuItem!
     private var paragraphItem: NSMenuItem!
+    private var updateItem: NSMenuItem!
     private var resetIconTask: Task<Void, Never>?
+    private let updater = Updater()
 
     private static let modeKey = "textMode"
+    private static let updateTitle = "Update"
 
     private var mode: TextMode {
         get {
@@ -52,10 +55,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(sentenceItem)
         menu.addItem(paragraphItem)
         menu.addItem(.separator())
+        updateItem = NSMenuItem(title: Self.updateTitle, action: #selector(AppDelegate.checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit Lipsum in a Click", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
+        // Items are enabled/disabled by hand (the Update item is greyed out while it works).
+        menu.autoenablesItems = false
         updateCheckmarks()
+
+        updater.onStateChange = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .idle:
+                self.updateItem.title = Self.updateTitle
+                self.updateItem.isEnabled = true
+            case .checking:
+                self.updateItem.title = "Checking for Updates…"
+                self.updateItem.isEnabled = false
+            case .downloading:
+                self.updateItem.title = "Downloading Update…"
+                self.updateItem.isEnabled = false
+            }
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        updater.checkForUpdates()
     }
 
     private func updateCheckmarks() {

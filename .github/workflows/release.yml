@@ -1,0 +1,89 @@
+name: Release
+
+# A release happens when VERSION changes on main and no release with that version exists yet.
+# It can also be started by hand: Actions -> Release -> Run workflow.
+# It builds the universal app (Apple Silicon + Intel), signs the zip for the in-app updater
+# (when the UPDATE_SIGNING_KEY secret exists) and publishes GitHub Release vX.Y.Z.
+on:
+  push:
+    branches: [main]
+    paths: [VERSION, .github/workflows/release.yml]
+  workflow_dispatch:
+
+concurrency: release
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: rel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "Release v$V already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test
+        if: steps.rel.outputs.skip != 'true'
+        run: swift test
+
+      - name: Build
+        if: steps.rel.outputs.skip != 'true'
+        run: UNIVERSAL=1 ./build.sh
+
+      - name: Sign for the in-app updater
+        if: steps.rel.outputs.skip != 'true'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::No UPDATE_SIGNING_KEY secret: this release can't be installed from the app's Update button (it will offer a download link instead)."
+            exit 0
+          fi
+          PUBKEY="$(sed -n 's/.*static let publicKey = "\(.*\)".*/\1/p' Sources/LipsumInAClick/Updater.swift)"
+          swift scripts/sign-update.swift build/LipsumInAClick.zip "$PUBKEY" > build/LipsumInAClick.zip.sig
+
+      - name: Publish release
+        if: steps.rel.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.rel.outputs.version }}
+        run: |
+          # Release notes: this version's section from CHANGELOG.md, then all earlier versions
+          # (older releases are deleted below, so this keeps the history).
+          awk -v v="$V" '$0 ~ "^## "v"$" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          { echo; echo "## Earlier versions"; awk -v v="$V" 'f && /^## / {sub(/^## /, "### ")} f; $0 ~ "^## "v"$" {f=1}' CHANGELOG.md | awk 'f || /^### /{f=1; print}'; } >> notes.md
+          cat >> notes.md <<'EOF'
+
+          ---
+          **Install:** download `LipsumInAClick.zip`, unzip, and drag the app to Applications. Already installed? Right-click the menu bar icon → **Update**.
+          EOF
+          ASSETS=(build/LipsumInAClick.zip)
+          [ -f build/LipsumInAClick.zip.sig ] && ASSETS+=(build/LipsumInAClick.zip.sig)
+          # gh uploads the assets before publishing, so the app never sees a half-finished release.
+          gh release create "v$V" "${ASSETS[@]}" --target "$GITHUB_SHA" --title "Lipsum in a Click $V" --notes-file notes.md --latest
+
+      # Only keep the newest release on GitHub.
+      - name: Delete older releases
+        if: steps.rel.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: v${{ steps.rel.outputs.version }}
+        run: |
+          for t in $(gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName'); do
+            if [ "$t" != "$KEEP" ]; then
+              echo "Deleting release $t"
+              gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag -y
+            fi
+          done
